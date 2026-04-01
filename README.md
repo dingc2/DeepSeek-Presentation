@@ -124,20 +124,19 @@ Here is the diff:
 +     sample mini-batch {q_b} from Q
 +     θ_old ← θ
 
--         P(θ) ← DTransformer(x_n | θ)                    // one forward pass
-+         for i = 1, ..., G:                               // G forward passes per question
-+             o_i ~ π_{θ_old}(· | Template(q_b))           // full generation, not just one step
+-         P(θ) ← DTransformer(x_n | θ)              // one forward pass
++         for i = 1, ..., G:                         // G passes per question
++             o_i ~ π_{θ_old}(· | Template(q_b))     // full generation
 
--         loss(θ) = −Σ_t log P(θ)[x_n[t+1], t]            // cross-entropy on every token
-+         r_i ← RuleReward(q_b, o_i, a_b*)                // binary: was the final answer right?
-+         A_i ← (r_i − mean) / std                        // normalize within the group
+-         loss(θ) = −Σ_t log P(θ)[x_n[t+1], t]      // cross-entropy, every token
++         r_i ← RuleReward(q_b, o_i, a_b*)          // binary: right or wrong?
++         A_i ← (r_i − mean) / std                  // normalize in group
 
--         θ ← θ − η · ∇ loss(θ)                           // minimize loss
-+         J ← Σ min(ρ_i · A_i, clip(ρ_i, 1−ε, 1+ε) · A_i) − β·D_KL
-+                                                          // clipped surrogate + KL penalty
-+         θ ← θ + η · ∇ J                                 // maximize objective
+-         θ ← θ − η · ∇ loss(θ)                     // minimize loss
++         J ← Σ min(ρ·A, clip(ρ,1−ε,1+ε)·A) − β·KL // clipped surrogate
++         θ ← θ + η · ∇ J                           // maximize objective
 
-+     if s mod N_ref = 0:  θ_ref ← θ                      // refresh reference policy
++     if s mod N_ref = 0:  θ_ref ← θ                // refresh ref policy
 
   return θ̂ = θ
 ```
@@ -204,6 +203,12 @@ where $\rho_i = \pi_\theta(o_i \mid q) / \pi_{\theta_{\text{old}}}(o_i \mid q)$ 
 
 That's it. No value network. No temporal structure. No per-token credits. Just: *compared to the other outputs in your group, how good was your reward?*
 
+#### The Intuition: Grading on a Curve
+
+Standard PPO is like a teacher grading an essay against an absolute, perfect rubric (the Value Network). It requires the teacher to memorize a massive, complex rulebook.
+
+GRPO is like grading on a curve. The teacher reads 16 essays from the same student, finds the average quality of that specific batch, and gives positive points to the ones above average and negative points to the ones below. You don't need to memorize an absolute rubric (the 671B Value Model) to know which of the 16 essays is the best.
+
 For a 671B-parameter model, this eliminates the need to train and store a second 671B-parameter value network — a practical necessity, not just a simplification.
 
 ---
@@ -227,7 +232,7 @@ In `DTraining`, the "reward" is implicit — it's the cross-entropy loss, which 
 + r = r_acc + r_fmt + r_lang                               // single scalar for entire sequence
 ```
 
-This is a *dramatically* weaker signal. The model generates thousands of tokens of reasoning, and all it hears back is "correct" or "incorrect." It has to figure out *on its own* which tokens in its chain of thought mattered.
+This is a *dramatically* weaker signal. Imagine writing a 5,000-word math proof. Under `DTraining`, the teacher corrects your spelling and logic at every single word. Under R1's RL, the teacher only looks at the very last number on the last page, says "Wrong," and walks away. The model has to figure out on its own which of the 5,000 tokens caused the failure.
 
 The paper's key finding: **this is enough**. With $G = 16$ samples per question, the group-relative advantage provides enough contrast (some outputs right, some wrong) for the model to learn which reasoning patterns lead to correct answers.
 
@@ -312,7 +317,7 @@ The full DeepSeek-R1 uses a four-stage pipeline. Here it is mapped against the P
 
 Each stage addresses a failure mode of the previous one:
 
-- **Stage 1** (Cold-Start SFT): Gives the model a readable reasoning format to start from, so RL doesn't have to discover formatting from scratch.
+- **Stage 1** (Cold-Start SFT): In DeepSeek-R1-Zero (pure RL), the model starts by generating absolute gibberish. It takes thousands of hours of computing power for it to accidentally format a correct answer and realize, "Oh, I should do that again." By doing a small amount of Cold-Start SFT first, we hand the model a basic template for readable reasoning, skipping the costly "floundering in gibberish" phase.
 - **Stage 2** (Reasoning RL): Improves actual reasoning ability beyond what imitation can provide.
 - **Stage 3** (Rejection Sampling + SFT): Harvests the best reasoning traces from Stage 2 and combines them with general-purpose data. Resets to the base model and trains from scratch on this curated mix — a form of *distillation*.
 - **Stage 4** (Comprehensive RL): Final polish. Adds helpfulness and safety rewards. General instruction data is introduced only in the last 400 steps to prevent reward hacking.
@@ -328,6 +333,12 @@ Notice the alternating pattern: **SFT → RL → SFT → RL**. Each SFT stage st
 Look at `GRPOAdvantage`: when all $G$ outputs for a question get the **same** reward (all correct or all wrong), $\sigma = 0$ and $A_i$ is undefined — division by zero. The model learns nothing from that question.
 
 **As the model improves and starts getting most questions right, this happens more and more often — what does that imply about GRPO's ability to keep improving, and how would you fix it?**
+
+> **Presenter Note — The Practical Answer:**
+>
+> Mathematically, division by zero is prevented by adding a tiny constant (epsilon) to the denominator: $A_i = (r_i - \mu) / (\sigma + \epsilon)$.
+>
+> Conceptually, if a model is getting every single rollout correct, the advantage $A_i$ zeroes out, meaning the model stops learning from that specific question. This is actually a *feature*, not a bug! If the model already masters a question, it shouldn't waste gradient updates on it. It naturally forces the algorithm to focus its learning only on the difficult questions where the 16 rollouts yield mixed results.
 
 ---
 
