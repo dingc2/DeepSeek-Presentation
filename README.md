@@ -69,36 +69,40 @@ This is the central change. Let's compare Phuong & Hutter's `DTraining` with Dee
 
 **Phuong & Hutter — Algorithm 14: `DTraining`**
 
-```
-DTraining(x_{1:N_data}, θ) → θ̂
-    for epoch = 1, 2, ..., N_epochs:
-        for n = 1, 2, ..., N_data:
-            ℓ ← length(x_n)
-            P(θ) ← DTransformer(x_n | θ)
-            loss(θ) = −Σ_{t=1}^{ℓ−1} log P(θ)[x_n[t+1], t]     ← cross-entropy
-            θ ← θ − η · ∇loss(θ)                                 ← gradient descent
-    return θ̂ = θ
-```
+$$
+\begin{aligned}
+& \textbf{DTraining}(x_{1:N_{\text{data}}},\; \theta) \to \hat{\theta} \\[6pt]
+& \textbf{for } \text{epoch} = 1, 2, \ldots, N_{\text{epochs}}\textbf{:} \\
+& \quad \textbf{for } n = 1, 2, \ldots, N_{\text{data}}\textbf{:} \\
+& \qquad \ell \leftarrow \text{length}(x_n) \\
+& \qquad P(\theta) \leftarrow \text{DTransformer}(x_n \mid \theta) \\
+& \qquad \text{loss}(\theta) = -\sum_{t=1}^{\ell-1} \log P(\theta)\big[x_n[t{+}1],\; t\big] \quad \triangleright \text{ cross-entropy} \\
+& \qquad \theta \leftarrow \theta - \eta \cdot \nabla\,\text{loss}(\theta) \quad \triangleright \text{ gradient descent} \\[6pt]
+& \textbf{return } \hat{\theta} = \theta
+\end{aligned}
+$$
 
 **DeepSeek-R1-Zero — Algorithm 5: `TrainR1Zero`**
 
-```
-TrainR1Zero(Q, θ_0) → θ̂
-    θ ← θ_0;  θ_ref ← θ_0
-    for s = 1, 2, ..., N_steps:
-        sample mini-batch {q_b} from Q
-        θ_old ← θ
-        for each q_b:
-            for i = 1, ..., G:                                    ← sample G outputs per question
-                o_i ~ π_{θ_old}(· | Template(q_b))
-            for i = 1, ..., G:
-                r_i ← RuleReward(q_b, o_i, a_b*)                 ← did it get the right answer?
-            {A_i} ← GRPOAdvantage({r_i})                         ← normalize within group
-        J ← (1/B) Σ_b GRPOObjective(q_b, {o_i}, {A_i} | θ, θ_old, θ_ref)
-        θ ← θ + η · ∇_θ J                                       ← gradient ASCENT (maximize)
-        if s mod N_ref = 0:  θ_ref ← θ
-    return θ̂ = θ
-```
+$$
+\begin{aligned}
+& \textbf{TrainR1Zero}(\mathcal{Q},\; \theta_0) \to \hat{\theta} \\[6pt]
+& \theta \leftarrow \theta_0 \;;\quad \theta_{\text{ref}} \leftarrow \theta_0 \\
+& \textbf{for } s = 1, 2, \ldots, N_{\text{steps}}\textbf{:} \\
+& \quad \text{sample mini-batch } \{q_b\} \text{ from } \mathcal{Q} \\
+& \quad \theta_{\text{old}} \leftarrow \theta \\
+& \quad \textbf{for each } q_b\textbf{:} \\
+& \qquad \textbf{for } i = 1, \ldots, G\textbf{:} \quad \triangleright \text{ sample } G \text{ outputs per question} \\
+& \qquad\quad o_i \sim \pi_{\theta_{\text{old}}}(\;\cdot \mid \text{Template}(q_b)\;) \\
+& \qquad \textbf{for } i = 1, \ldots, G\textbf{:} \\
+& \qquad\quad r_i \leftarrow \text{RuleReward}(q_b,\; o_i,\; a_b^{\ast}) \quad \triangleright \text{ did it get the right answer?} \\
+& \qquad \{A_i\} \leftarrow \text{GRPOAdvantage}(\{r_i\}) \quad \triangleright \text{ normalize within group} \\
+& \quad \mathcal{J} \leftarrow \tfrac{1}{B} \textstyle\sum_b \text{GRPOObjective}(q_b,\; \{o_i\},\; \{A_i\} \mid \theta,\; \theta_{\text{old}},\; \theta_{\text{ref}}) \\
+& \quad \theta \leftarrow \theta + \eta \cdot \nabla_\theta \mathcal{J} \quad \triangleright \text{ gradient ascent (maximize)} \\
+& \quad \textbf{if } s \bmod N_{\text{ref}} = 0\textbf{: } \theta_{\text{ref}} \leftarrow \theta \\[6pt]
+& \textbf{return } \hat{\theta} = \theta
+\end{aligned}
+$$
 
 Here is the diff:
 
@@ -157,6 +161,23 @@ In standard PPO, you need a *value function* $V_\phi(s)$ — a separate neural n
 $$A_t^{\text{PPO}} = \sum_{k=0}^{T-t} (\gamma\lambda)^k \big(r_{t+k} + \gamma V_\phi(s_{t+k+1}) - V_\phi(s_{t+k})\big)$$
 
 GRPO replaces all of this with a z-score:
+
+$$
+\begin{aligned}
+& \textbf{GRPOAdvantage}(\{r_i\}_{i=1}^{G}) \to \{A_i\}_{i=1}^{G} \\[6pt]
+& \mu \leftarrow \frac{1}{G} \sum_{i=1}^{G} r_i \quad \triangleright \text{ group mean} \\[4pt]
+& \sigma \leftarrow \sqrt{\frac{1}{G} \sum_{i=1}^{G} (r_i - \mu)^2} \quad \triangleright \text{ group std} \\[4pt]
+& \textbf{for } i = 1, 2, \ldots, G\textbf{:} \\
+& \quad A_i \leftarrow \frac{r_i - \mu}{\sigma} \\[6pt]
+& \textbf{return } \{A_i\}_{i=1}^{G}
+\end{aligned}
+$$
+
+And the GRPO objective each output contributes to:
+
+$$\mathcal{J}_i^{\text{GRPO}} = \min\!\Big(\rho_i \, A_i,\; \text{clip}(\rho_i,\; 1{-}\varepsilon,\; 1{+}\varepsilon)\, A_i\Big) - \beta \, \hat{D}_{\text{KL}}$$
+
+where $\rho_i = \pi_\theta(o_i \mid q) \;/\; \pi_{\theta_{\text{old}}}(o_i \mid q)$ is the importance sampling ratio.
 
 ```diff
   ADVANTAGE ESTIMATION
@@ -238,7 +259,7 @@ The last diff is at inference time. Phuong & Hutter's `DInference` produces an u
 
 #### What to notice
 
-The output goes from $y \in V^*$ (a flat sequence) to $(c, a) \in V^* \times V^*$ (a structured pair). But this structure is **not architecturally enforced**. There is no change to the transformer's forward pass. The `<think>` and `<answer>` tags are just tokens in the vocabulary.
+The output goes from $y \in V^{\ast}$ (a flat sequence) to $(c, a) \in V^{\ast} \times V^{\ast}$ (a structured pair). But this structure is **not architecturally enforced**. There is no change to the transformer's forward pass. The `<think>` and `<answer>` tags are just tokens in the vocabulary.
 
 The structure is maintained by:
 1. The **template** (which starts generation with `<think>`), and
@@ -298,37 +319,17 @@ Notice the alternating pattern: **SFT → RL → SFT → RL**. Each SFT stage st
 
 ### Question 1: The Degenerate Group Problem
 
-Look at Algorithm 1 (`GRPOAdvantage`):
+Look at `GRPOAdvantage`: when all $G$ outputs for a question get the **same** reward (all correct or all wrong), $\sigma = 0$ and $A_i$ is undefined — division by zero. The model learns nothing from that question.
 
-```
-μ ← (1/G) Σ r_i
-σ ← sqrt((1/G) Σ (r_i − μ)²)
-A_i ← (r_i − μ) / σ
-```
-
-When all $G$ outputs for a question receive the **same reward** (all correct or all wrong), $\sigma = 0$ and the advantage $A_i$ is undefined (division by zero). The pseudocode does not handle this case.
-
-**Part (a):** How often would you expect this to happen during training, and how does the frequency change as the model improves? Think about what the reward distribution within a group looks like at initialization (base model on math problems) versus after thousands of steps.
-
-**Part (b):** GRPO implicitly assumes that *within-group variance* is a meaningful signal — that some outputs will be right and some wrong, providing contrast. When this assumption fails (all right or all wrong), the model receives zero gradient for that question. Propose a modification to the advantage estimator that degrades gracefully in these cases. Consider: should the model still learn something when all its outputs are correct?
-
-**Part (c):** Compare this to PPO's learned value function. In PPO, even when all outputs are correct, the value function can still provide a gradient by distinguishing *better* correct solutions from *worse* correct ones (e.g., shorter reasoning, fewer errors, more elegant proofs). What is GRPO sacrificing by discarding the value function? Is there a middle ground?
+**As the model improves and starts getting most questions right, this happens more and more often — what does that imply about GRPO's ability to keep improving, and how would you fix it?**
 
 ---
 
 ### Question 2: The Ghost in the Template
 
-In Phuong & Hutter's framework, `DInference` produces a flat sequence $y \in V^*$. There is no formal notion of *structured output*. R1 produces a structured pair $(c, a)$ — but this structure lives in a strange place.
+R1's `<think>/<answer>` structure is enforced by neither the architecture nor a grammar — only by a scalar reward $r_{\text{fmt}}$ and a prompt template. The formal framework (Phuong & Hutter) has no way to express that some output sequences are "structurally valid" and others aren't.
 
-It is **not** in the architecture (the forward pass is unchanged).
-It is **not** in a grammar or constraint decoder.
-It is in the **reward function** ($r_{\text{fmt}}$ rewards valid tags) and the **template** (generation starts with `<think>`).
-
-**Part (a):** If you were adding a `StructuredDInference` algorithm to Phuong & Hutter's paper, how would you formalize this? Where does the structural constraint formally live — in the input specification, the output specification, the hyperparameters, or somewhere else? Write the algorithm signature.
-
-**Part (b):** The structure is *soft* — nothing prevents the model from generating malformed output during inference (and it sometimes does). Compare this to *hard* structural constraints like constrained decoding, where the logits are masked at each step to enforce a grammar. What are the tradeoffs? Consider: in R1-Zero (pure RL, no SFT), the model learned the `<think>/<answer>` format entirely from the format reward. Could a constrained decoder have achieved the same thing without $r_{\text{fmt}}$?
-
-**Part (c):** This question generalizes beyond R1. More and more LLM systems use tool calls, function signatures, JSON schemas, and other structured outputs. In the Phuong & Hutter formalism, all of these are just tokens in $V^*$ — the framework has no way to express that some outputs are "valid" and some aren't. Is this a gap in the formalism, or is it the right level of abstraction?
+**If structured outputs (tool calls, JSON, chain-of-thought tags) are becoming central to how LLMs are used, is this a gap in the formalism that needs a new primitive, or is "just tokens in $V^{\ast}$" the right abstraction?**
 
 ---
 
@@ -349,7 +350,7 @@ Viewed through the lens of Phuong & Hutter, DeepSeek-R1's contribution is surpri
 | `DTraining`: minimize cross-entropy on next-token prediction | `TrainR1Zero`/`TrainR1`: maximize GRPO objective on outcome rewards | Shift from imitation to incentivization |
 | Loss is **dense** (per-token) | Reward is **sparse** (per-sequence) | Forces the model to discover its own intermediate steps |
 | Single training phase | Four-stage pipeline (SFT → RL → SFT → RL) | Each stage addresses failure modes of the previous one |
-| `DInference`: flat $y \in V^*$ | `R1Inference`: structured $(c, a) \in V^* \times V^*$ | Separates reasoning from final answer |
+| `DInference`: flat $y \in V^{\ast}$ | `R1Inference`: structured $(c, a) \in V^{\ast} \times V^{\ast}$ | Separates reasoning from final answer |
 | Advantage via value network (PPO) | Advantage via group statistics (GRPO) | Eliminates the need for a second 671B model |
 
 ### The Big Takeaway
