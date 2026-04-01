@@ -10,14 +10,14 @@ Presented for a class that has internalized Phuong & Hutter (2022).
 
 ## Roadmap
 
-| Section | Topic | Time |
-|---------|-------|------|
-| 1 | Our Starting Point — The Algorithms We Know | ~3 min |
-| 2 | The Question R1 Asks | ~3 min |
-| 3 | What Changed — Shown as Diffs | ~12 min |
-| 4 | The Full Training Pipeline | ~5 min |
-| 5 | Discussion Questions | ~5 min |
-| 6 | Summary | ~2 min |
+| Section | Topic |
+|---------|-------|
+| 1 | Our Starting Point — The Algorithms We Know |
+| 2 | The Question R1 Asks |
+| 3 | What Changed — Shown as Diffs |
+| 4 | The Full Training Pipeline |
+| 5 | Discussion Questions |
+| 6 | Summary |
 
 ---
 
@@ -53,7 +53,7 @@ Phuong & Hutter's `DTraining` optimizes a single objective:
 
 > Maximize the log-likelihood of the next token given all preceding tokens.
 
-$$\text{loss}(\theta) = -\sum_{t=1}^{\ell-1} \log P_\theta\big(x[t{+}1] \;\big|\; x[1{:}t]\big)$$
+$$\text{loss}(\theta) = -\sum_{t=1}^{\ell-1} \log P_\theta\!\left(x[t{+}1] \mid x[1{:}t]\right)$$
 
 This is *imitation*. The model learns to mimic the statistical patterns in its training corpus. If the corpus contains reasoning, the model learns to produce text that *looks like* reasoning.
 
@@ -129,7 +129,8 @@ Here is the diff:
 +         A_i ← (r_i − mean) / std                        // normalize within the group
 
 -         θ ← θ − η · ∇ loss(θ)                           // minimize loss
-+         J ← Σ min(ρ_i · A_i, clip(ρ_i) · A_i) − β·D_KL // clipped surrogate + KL penalty
++         J ← Σ min(ρ_i · A_i, clip(ρ_i, 1−ε, 1+ε) · A_i) − β·D_KL
++                                                          // clipped surrogate + KL penalty
 +         θ ← θ + η · ∇ J                                 // maximize objective
 
 +     if s mod N_ref = 0:  θ_ref ← θ                      // refresh reference policy
@@ -143,13 +144,13 @@ Here is the diff:
 
 1. **The data** went from token sequences to question-answer pairs. The model no longer sees the "right" token sequence — it has to generate one.
 
-2. **The forward pass** went from a single call to `DTransformer` to sampling `G = 16` complete output sequences per question. Each output is a full autoregressive rollout (the model runs `DInference` internally, many tokens long).
+2. **The forward pass** went from a single call to `DTransformer` to sampling $G = 16$ complete output sequences per question. Each output is a full autoregressive rollout (the model runs `DInference` internally, many tokens long).
 
 3. **The loss signal** went from per-token cross-entropy to a scalar reward on the *final answer*. The model gets no signal about which intermediate tokens were good — only whether the end result was correct.
 
 4. **The gradient** went from descent (minimize loss) to ascent (maximize objective), using a clipped surrogate from the PPO family.
 
-5. **A reference policy** was added. This is a frozen copy of θ, updated every 400 steps, used to compute a KL divergence penalty that prevents the policy from drifting too far too fast.
+5. **A reference policy** was added. This is a frozen copy of $\theta$, updated every 400 steps, used to compute a KL divergence penalty that prevents the policy from drifting too far too fast.
 
 ---
 
@@ -207,7 +208,7 @@ In `DTraining`, the "reward" is implicit — it's the cross-entropy loss, which 
 
 This is a *dramatically* weaker signal. The model generates thousands of tokens of reasoning, and all it hears back is "correct" or "incorrect." It has to figure out *on its own* which tokens in its chain of thought mattered.
 
-The paper's key finding: **this is enough**. With G = 16 samples per question, the group-relative advantage provides enough contrast (some outputs right, some wrong) for the model to learn which reasoning patterns lead to correct answers.
+The paper's key finding: **this is enough**. With $G = 16$ samples per question, the group-relative advantage provides enough contrast (some outputs right, some wrong) for the model to learn which reasoning patterns lead to correct answers.
 
 ---
 
@@ -219,13 +220,13 @@ The last diff is at inference time. Phuong & Hutter's `DInference` produces an u
   INFERENCE
   ─────────
 
-  DInference(x, θ̂) → y
-      ℓ ← length(x)
-      for i = 1, ..., ℓ_gen:
-          P ← DTransformer(x | θ̂)
-          p ← P[:, ℓ+i−1]
-          sample y from p^{1/τ}
-          x ← [x, y]
+- DInference(x, θ̂) → y
+-     ℓ ← length(x)
+-     for i = 1, ..., ℓ_gen:
+-         P ← DTransformer(x | θ̂)
+-         p ← P[:, ℓ+i−1]
+-         sample y from p^{1/τ}
+-         x ← [x, y]
 -     return y = x[ℓ+1 : ℓ+ℓ_gen]                         // flat token sequence
 
 + R1Inference(x, θ̂) → (c, a)
@@ -243,11 +244,11 @@ The last diff is at inference time. Phuong & Hutter's `DInference` produces an u
 
 #### What to notice
 
-The output goes from `y ∈ V*` (a flat sequence) to `(c, a) ∈ V* × V*` (a structured pair). But this structure is **not architecturally enforced**. There is no change to the transformer's forward pass. The `<think>` and `<answer>` tags are just tokens in the vocabulary.
+The output goes from $y \in V^*$ (a flat sequence) to $(c, a) \in V^* \times V^*$ (a structured pair). But this structure is **not architecturally enforced**. There is no change to the transformer's forward pass. The `<think>` and `<answer>` tags are just tokens in the vocabulary.
 
 The structure is maintained by:
 1. The **template** (which starts generation with `<think>`), and
-2. The **format reward** `r_fmt` (which penalizes outputs that don't close their tags properly).
+2. The **format reward** $r_{\text{fmt}}$ (which penalizes outputs that don't close their tags properly).
 
 The model learned to produce structured output *because it was rewarded for it*, not because it was constrained to.
 
@@ -311,7 +312,7 @@ Look at Algorithm 1 (`GRPOAdvantage`):
 A_i ← (r_i − μ) / σ
 ```
 
-When all G outputs for a question receive the **same reward** (all correct or all wrong), `σ = 0` and the advantage `A_i` is undefined (division by zero). The pseudocode does not handle this case.
+When all $G$ outputs for a question receive the **same reward** (all correct or all wrong), $\sigma = 0$ and the advantage $A_i$ is undefined (division by zero). The pseudocode does not handle this case.
 
 **Part (a):** How often would you expect this to happen during training, and how does the frequency change as the model improves? Think about what the reward distribution within a group looks like at initialization (base model on math problems) versus after thousands of steps.
 
@@ -323,17 +324,17 @@ When all G outputs for a question receive the **same reward** (all correct or al
 
 ### Question 2: The Ghost in the Template
 
-In Phuong & Hutter's framework, `DInference` produces a flat sequence `y ∈ V*`. There is no formal notion of *structured output*. R1 produces a structured pair `(c, a)` — but this structure lives in a strange place.
+In Phuong & Hutter's framework, `DInference` produces a flat sequence $y \in V^*$. There is no formal notion of *structured output*. R1 produces a structured pair $(c, a)$ — but this structure lives in a strange place.
 
 It is **not** in the architecture (the forward pass is unchanged).
 It is **not** in a grammar or constraint decoder.
-It is in the **reward function** (`r_fmt` rewards valid tags) and the **template** (generation starts with `<think>`).
+It is in the **reward function** ($r_{\text{fmt}}$ rewards valid tags) and the **template** (generation starts with `<think>`).
 
 **Part (a):** If you were adding a `StructuredDInference` algorithm to Phuong & Hutter's paper, how would you formalize this? Where does the structural constraint formally live — in the input specification, the output specification, the hyperparameters, or somewhere else? Write the algorithm signature.
 
-**Part (b):** The structure is *soft* — nothing prevents the model from generating malformed output during inference (and it sometimes does). Compare this to *hard* structural constraints like constrained decoding, where the logits are masked at each step to enforce a grammar. What are the tradeoffs? Consider: in R1-Zero (pure RL, no SFT), the model learned the `<think>/<answer>` format entirely from the format reward. Could a constrained decoder have achieved the same thing without `r_fmt`?
+**Part (b):** The structure is *soft* — nothing prevents the model from generating malformed output during inference (and it sometimes does). Compare this to *hard* structural constraints like constrained decoding, where the logits are masked at each step to enforce a grammar. What are the tradeoffs? Consider: in R1-Zero (pure RL, no SFT), the model learned the `<think>/<answer>` format entirely from the format reward. Could a constrained decoder have achieved the same thing without $r_{\text{fmt}}$?
 
-**Part (c):** This question generalizes beyond R1. More and more LLM systems use tool calls, function signatures, JSON schemas, and other structured outputs. In the Phuong & Hutter formalism, all of these are just tokens in `V*` — the framework has no way to express that some outputs are "valid" and some aren't. Is this a gap in the formalism, or is it the right level of abstraction?
+**Part (c):** This question generalizes beyond R1. More and more LLM systems use tool calls, function signatures, JSON schemas, and other structured outputs. In the Phuong & Hutter formalism, all of these are just tokens in $V^*$ — the framework has no way to express that some outputs are "valid" and some aren't. Is this a gap in the formalism, or is it the right level of abstraction?
 
 ---
 
@@ -354,7 +355,7 @@ Viewed through the lens of Phuong & Hutter, DeepSeek-R1's contribution is surpri
 | `DTraining`: minimize cross-entropy on next-token prediction | `TrainR1Zero`/`TrainR1`: maximize GRPO objective on outcome rewards | Shift from imitation to incentivization |
 | Loss is **dense** (per-token) | Reward is **sparse** (per-sequence) | Forces the model to discover its own intermediate steps |
 | Single training phase | Four-stage pipeline (SFT → RL → SFT → RL) | Each stage addresses failure modes of the previous one |
-| `DInference`: flat `y ∈ V*` | `R1Inference`: structured `(c, a) ∈ V* × V*` | Separates reasoning from final answer |
+| `DInference`: flat $y \in V^*$ | `R1Inference`: structured $(c, a) \in V^* \times V^*$ | Separates reasoning from final answer |
 | Advantage via value network (PPO) | Advantage via group statistics (GRPO) | Eliminates the need for a second 671B model |
 
 ### The Big Takeaway
@@ -373,17 +374,17 @@ For reference, how R1's notation maps to Phuong & Hutter:
 
 | R1 Symbol | P&H Equivalent | Meaning |
 |---|---|---|
-| `π_θ(o \| q)` | `P_θ(x[t+1] \| x[1:t])` | Model's distribution, but over *full sequences* vs. *next tokens* |
-| `q` | `x` (input) | The prompt / question |
-| `o_i` | `y` (output) | A sampled output; R1 samples G of them |
-| `r_i` | `−loss` (loosely) | Scalar reward; replaces the dense per-token loss |
-| `A_i` | no equivalent | Group-relative advantage (new concept) |
-| `θ_old` | no equivalent | Frozen copy for importance sampling |
-| `θ_ref` | no equivalent | Slowly-updating reference for KL penalty |
-| `ε` (clip ratio) | no equivalent | GRPO hyperparameter |
-| `β` (KL coeff) | no equivalent | Regularization strength |
-| `G` (group size) | no equivalent | Number of rollouts per question |
-| `Template(q)` | no equivalent | Wraps prompt with `<think>`/`<answer>` instructions |
+| $\pi_\theta(o \mid q)$ | $P_\theta(x[t+1] \mid x[1:t])$ | Model's distribution, but over *full sequences* vs. *next tokens* |
+| $q$ | $x$ (input) | The prompt / question |
+| $o_i$ | $y$ (output) | A sampled output; R1 samples $G$ of them |
+| $r_i$ | $-\text{loss}$ (loosely) | Scalar reward; replaces the dense per-token loss |
+| $A_i$ | no equivalent | Group-relative advantage (new concept) |
+| $\theta_{\text{old}}$ | no equivalent | Frozen copy for importance sampling |
+| $\theta_{\text{ref}}$ | no equivalent | Slowly-updating reference for KL penalty |
+| $\varepsilon$ (clip ratio) | no equivalent | GRPO hyperparameter |
+| $\beta$ (KL coeff) | no equivalent | Regularization strength |
+| $G$ (group size) | no equivalent | Number of rollouts per question |
+| $\text{Template}(q)$ | no equivalent | Wraps prompt with `<think>`/`<answer>` instructions |
 
 ---
 

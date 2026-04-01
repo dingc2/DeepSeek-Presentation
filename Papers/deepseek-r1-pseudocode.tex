@@ -1,0 +1,446 @@
+% Formal Algorithms for DeepSeek-R1
+% Style: Phuong & Hutter, "Formal Algorithms for Transformers" (2022)
+
+\documentclass[11pt,a4paper]{article}
+
+% ── Packages ────────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage[ruled,lined,linesnumbered]{algorithm2e}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{bm}
+
+% ── Algorithm Style ─────────────────────────────────────────────────────────
+\SetAlgoLined
+\SetArgSty{textnormal}
+\SetKwComment{Comment}{/* }{ */}
+\SetCommentSty{itshape}
+\DontPrintSemicolon
+\SetAlCapSty{textnormal}
+\SetAlCapNameSty{textbf}
+\SetAlCapHSkip{0em}
+
+% ── Custom Commands ─────────────────────────────────────────────────────────
+\newcommand{\vect}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\bm{#1}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\intset}[1]{[#1]}
+\DeclareMathOperator{\softmax}{softmax}
+\DeclareMathOperator{\relu}{ReLU}
+\DeclareMathOperator{\gelu}{GELU}
+\DeclareMathOperator{\layernorm}{layer\_norm}
+\newcommand{\T}{\mathsf{T}}
+\newcommand{\params}{\bm{\theta}}
+\newcommand{\paramshat}{\hat{\bm{\theta}}}
+\DeclareMathOperator*{\std}{std}
+\DeclareMathOperator*{\mean}{mean}
+\DeclareMathOperator{\clip}{clip}
+\newcommand{\KL}{\mathbb{D}_{\mathrm{KL}}}
+
+% ── Title ───────────────────────────────────────────────────────────────────
+\title{\textbf{Formal Algorithms for DeepSeek-R1} \\[0.5em]
+  \large Formal Pseudocode in the Style of Phuong \& Hutter (2022)}
+\author{Based on: DeepSeek-AI, ``DeepSeek-R1: Incentivizing Reasoning Capability \\
+in LLMs via Reinforcement Learning'' (arXiv:2501.12948, 2025)}
+\date{\today}
+
+% ═══════════════════════════════════════════════════════════════════════════
+\begin{document}
+\maketitle
+
+% ── Abstract ────────────────────────────────────────────────────────────────
+\begin{abstract}
+This document presents a formal pseudocode specification of the core algorithms in DeepSeek-R1, which incentivizes reasoning capability in large language models via reinforcement learning (RL). We formalize: (1)~Group Relative Policy Optimization (GRPO), the RL algorithm that replaces PPO by estimating advantages from group-level reward statistics instead of a learned value model; (2)~the rule-based and model-based reward functions for accuracy, format, language consistency, helpfulness, and safety; (3)~the multi-stage training pipeline comprising cold-start SFT, reasoning-focused RL, rejection sampling with SFT on mixed data, and preference-aligned RL; and (4)~the structured inference procedure with chain-of-thought reasoning. All notation is defined in Appendix~A.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ── Section 1: Introduction ─────────────────────────────────────────────────
+\section{Introduction}
+
+DeepSeek-R1 demonstrates that advanced reasoning capabilities---such as self-reflection, verification, and dynamic strategy adaptation---can emerge in large language models through pure reinforcement learning, without requiring human-annotated reasoning traces. The system is built upon DeepSeek-V3-Base (a 671B-parameter Mixture-of-Experts model) and trained using Group Relative Policy Optimization (GRPO).
+
+The key insight is that by providing only outcome-based reward signals (correctness of final answers) and a minimal structural template (separating reasoning from answers via tags), the model autonomously develops sophisticated reasoning behaviors including increasing chain-of-thought length, self-correction (``aha moments''), and exploration of alternative solution strategies.
+
+This document formalizes seven core algorithms:
+\begin{itemize}
+  \item \textbf{Algorithm 1}: GRPO advantage estimation from grouped outputs.
+  \item \textbf{Algorithm 2}: The GRPO policy optimization objective.
+  \item \textbf{Algorithm 3}: Rule-based reward computation (accuracy + format + language consistency).
+  \item \textbf{Algorithm 4}: Model-based reward computation (helpfulness + safety).
+  \item \textbf{Algorithm 5}: DeepSeek-R1-Zero training (pure RL from base model).
+  \item \textbf{Algorithm 6}: DeepSeek-R1 multi-stage training pipeline.
+  \item \textbf{Algorithm 7}: Structured inference with chain-of-thought generation.
+\end{itemize}
+
+% ── Section 2: Notation and Conventions ─────────────────────────────────────
+\section{Notation and Conventions}
+
+We use the following conventions throughout this document.
+Let $V$ denote a finite vocabulary with $N_V = |V|$ elements.
+Sequences of tokens are written $\vect{x} \equiv x[1:\ell] \equiv x[1]x[2]\ldots x[\ell] \in V^*$.
+Arrays are 1-indexed: $x[1:\ell]$ includes $x[\ell]$.
+$\params$ denotes all learnable parameters of the policy model; $\paramshat$ denotes trained parameters.
+$\pi_{\params}(o \mid q)$ denotes the probability of generating output sequence $o$ given question $q$ under policy parameterized by $\params$.
+We write $\params_{\mathrm{old}}$ for the parameters of the sampling (old) policy, $\params_{\mathrm{ref}}$ for the reference policy, and $\params$ for the policy being optimized.
+
+For the reward system, $r_i \in \R$ denotes the scalar reward assigned to the $i$-th output in a group. The advantage $A_i$ is computed by normalizing rewards within a group. The ratio $\rho_i = \pi_{\params}(o_i \mid q) / \pi_{\params_{\mathrm{old}}}(o_i \mid q)$ is the importance sampling ratio.
+
+% ── Section 3: Architectural Components ─────────────────────────────────────
+\section{Core Components}
+
+This section formalizes the two building blocks unique to DeepSeek-R1's training: the GRPO advantage estimation and the GRPO policy update objective.
+
+% ── Algorithm 1: GRPO Advantage ──────────────────────────────────────────
+\begin{algorithm}[H]
+  \caption{$\{A_i\}_{i=1}^{G} \leftarrow \textsc{GRPOAdvantage}(\{r_i\}_{i=1}^{G})$}
+  \Comment{Compute group-relative advantages by normalizing rewards within a group.}
+  \KwIn{$\{r_i\}_{i=1}^{G} \in \R^G$, rewards for $G$ sampled outputs}
+  \KwOut{$\{A_i\}_{i=1}^{G} \in \R^G$, normalized advantage estimates}
+  \BlankLine
+  $\mu \leftarrow \frac{1}{G} \sum_{i=1}^{G} r_i$ \Comment*[r]{group mean}
+  $\sigma \leftarrow \sqrt{\frac{1}{G} \sum_{i=1}^{G} (r_i - \mu)^2}$ \Comment*[r]{group std}
+  \For{$i = 1, 2, \ldots, G$}{
+    $A_i \leftarrow \dfrac{r_i - \mu}{\sigma}$ \;
+  }
+  \Return $\{A_i\}_{i=1}^{G}$
+\end{algorithm}
+
+\medskip
+
+Unlike PPO, which requires a learned value model of similar size to the policy to estimate advantages via Generalized Advantage Estimation (GAE), GRPO estimates advantages purely from the group statistics of sampled rewards. This eliminates the memory and computational overhead of training a separate value model---a critical advantage when training 671B-parameter models.
+
+% ── Algorithm 2: GRPO Objective ──────────────────────────────────────────
+\begin{algorithm}[H]
+  \caption{$\mathcal{J} \leftarrow \textsc{GRPOObjective}(q, \{o_i\}_{i=1}^{G}, \{A_i\}_{i=1}^{G} \mid \params, \params_{\mathrm{old}}, \params_{\mathrm{ref}})$}
+  \Comment{Compute the GRPO clipped surrogate objective with KL regularization.}
+  \KwIn{$q \in V^*$, input question}
+  \KwIn{$\{o_i\}_{i=1}^{G} \in (V^*)^G$, sampled outputs from $\pi_{\params_{\mathrm{old}}}$}
+  \KwIn{$\{A_i\}_{i=1}^{G} \in \R^G$, group-relative advantages (Algorithm~1)}
+  \KwOut{$\mathcal{J} \in \R$, scalar objective to maximize}
+  \textbf{Parameters:} $\params$ (policy being optimized) \;
+  \textbf{Frozen:} $\params_{\mathrm{old}}$ (sampling policy), $\params_{\mathrm{ref}}$ (reference policy) \;
+  \textbf{Hyperparameters:} $\varepsilon \in (0, \infty)$ clip ratio, $\beta \in [0, \infty)$ KL coefficient \;
+  \BlankLine
+  $\mathcal{J} \leftarrow 0$ \;
+  \For{$i = 1, 2, \ldots, G$}{
+    $\rho_i \leftarrow \dfrac{\pi_{\params}(o_i \mid q)}{\pi_{\params_{\mathrm{old}}}(o_i \mid q)}$ \Comment*[r]{importance sampling ratio}
+    $\mathcal{J}_i^{\mathrm{clip}} \leftarrow \min\!\Big(\rho_i \, A_i, \;\clip(\rho_i, \, 1{-}\varepsilon, \, 1{+}\varepsilon) \, A_i\Big)$ \;
+    \BlankLine
+    \Comment{Unbiased KL divergence estimator (Schulman, 2020)}
+    $\hat{D}_i \leftarrow \dfrac{\pi_{\params_{\mathrm{ref}}}(o_i \mid q)}{\pi_{\params}(o_i \mid q)} - \log \dfrac{\pi_{\params_{\mathrm{ref}}}(o_i \mid q)}{\pi_{\params}(o_i \mid q)} - 1$ \;
+    \BlankLine
+    $\mathcal{J} \leftarrow \mathcal{J} + \mathcal{J}_i^{\mathrm{clip}} - \beta \, \hat{D}_i$ \;
+  }
+  \Return $\mathcal{J} / G$
+\end{algorithm}
+
+\medskip
+
+Key differences from PPO: (i)~advantages are estimated from group reward statistics rather than a learned value model; (ii)~KL divergence is added directly to the loss rather than as a per-token reward penalty, which avoids implicitly penalizing response length; (iii)~the reference policy $\params_{\mathrm{ref}}$ is periodically updated to the latest policy every $N_{\mathrm{ref}}$ steps.
+
+% ── Section 4: Reward Functions ────────────────────────────────────────────
+\section{Reward Functions}
+
+DeepSeek-R1 uses two classes of rewards: rule-based rewards for verifiable reasoning tasks, and model-based rewards for general helpfulness and safety.
+
+% ── Algorithm 3: Rule-Based Reward ───────────────────────────────────────
+\begin{algorithm}[H]
+  \caption{$r \leftarrow \textsc{RuleReward}(q, o, a^* \mid \text{type})$}
+  \Comment{Compute rule-based reward for reasoning tasks.}
+  \KwIn{$q \in V^*$, question prompt}
+  \KwIn{$o \in V^*$, model output (containing $\langle$think$\rangle$ and $\langle$answer$\rangle$ tags)}
+  \KwIn{$a^* \in V^*$, ground-truth answer}
+  \KwIn{$\text{type} \in \{\text{math}, \text{code}, \text{stem}, \text{logic}\}$, task type}
+  \KwOut{$r \in \R$, scalar reward}
+  \BlankLine
+  \Comment{Accuracy reward}
+  $\hat{a} \leftarrow \textsc{ExtractAnswer}(o)$ \Comment*[r]{extract from $\langle$answer$\rangle$ tags}
+  \uIf{$\mathrm{type} = \mathrm{math}$}{
+    $r_{\mathrm{acc}} \leftarrow \mathbb{I}[\textsc{SymPyMatch}(\hat{a}, a^*)]$ \Comment*[r]{symbolic comparison}
+  }
+  \uElseIf{$\mathrm{type} = \mathrm{code}$}{
+    $r_{\mathrm{acc}} \leftarrow \mathbb{I}[\textsc{PassAllTests}(\hat{a}, \mathcal{T}_q)]$ \Comment*[r]{compiler + test cases $\mathcal{T}_q$}
+  }
+  \Else{
+    $r_{\mathrm{acc}} \leftarrow \mathbb{I}[\hat{a} = a^*]$ \Comment*[r]{exact match for STEM/logic}
+  }
+  \BlankLine
+  \Comment{Format reward}
+  $r_{\mathrm{fmt}} \leftarrow \mathbb{I}[\text{$o$ contains valid $\langle$think$\rangle$...$\langle$/think$\rangle$ and $\langle$answer$\rangle$...$\langle$/answer$\rangle$}]$ \;
+  \BlankLine
+  \Comment{Language consistency reward}
+  $r_{\mathrm{lang}} \leftarrow \dfrac{|\{w \in o : \textsc{Lang}(w) = \textsc{Lang}(q)\}|}{|\{w \in o\}|}$ \Comment*[r]{proportion of target-language words}
+  \BlankLine
+  \Return $r = r_{\mathrm{acc}} + r_{\mathrm{fmt}} + r_{\mathrm{lang}}$
+\end{algorithm}
+
+\medskip
+
+Notably, neural reward models (whether outcome-based or process-based) are deliberately \emph{not} used for reasoning tasks, because they are susceptible to reward hacking during large-scale RL. Rule-based rewards provide reliable, non-exploitable training signals.
+
+% ── Algorithm 4: Model-Based Reward ──────────────────────────────────────
+\begin{algorithm}[H]
+  \caption{$r \leftarrow \textsc{ModelReward}(q, o \mid \paramshat_{\mathrm{help}}, \paramshat_{\mathrm{safe}}, \text{dataset})$}
+  \Comment{Compute model-based reward for general (non-reasoning) tasks.}
+  \KwIn{$q \in V^*$, user query}
+  \KwIn{$o \in V^*$, model response}
+  \KwOut{$r \in \R$, scalar reward}
+  \textbf{Frozen models:} $\paramshat_{\mathrm{help}}$ (helpful RM), $\paramshat_{\mathrm{safe}}$ (safety RM) \;
+  \BlankLine
+  \uIf{$\mathrm{dataset} = \text{helpfulness}$}{
+    $o_{\mathrm{summary}} \leftarrow \textsc{ExtractSummary}(o)$ \Comment*[r]{assess only final summary}
+    $r_{\mathrm{pref}} \leftarrow \text{RM}_{\mathrm{help}}(o_{\mathrm{summary}} \mid \paramshat_{\mathrm{help}})$ \Comment*[r]{scalar preference score}
+  }
+  \ElseIf{$\mathrm{dataset} = \text{safety}$}{
+    $r_{\mathrm{pref}} \leftarrow \text{RM}_{\mathrm{safe}}(o \mid \paramshat_{\mathrm{safe}})$ \Comment*[r]{point-wise safe/unsafe score on full response}
+  }
+  \BlankLine
+  $r_{\mathrm{fmt}} \leftarrow \mathbb{I}[\text{$o$ has valid format}]$ \;
+  \Return $r = r_{\mathrm{pref}} + r_{\mathrm{fmt}}$
+\end{algorithm}
+
+% ── Section 5: Training ─────────────────────────────────────────────────────
+\section{Training}
+
+\subsection{DeepSeek-R1-Zero: Pure RL from Base Model}
+
+DeepSeek-R1-Zero applies GRPO directly to the base model without any supervised fine-tuning, demonstrating that reasoning can emerge from RL alone.
+
+% ── Algorithm 5: R1-Zero Training ────────────────────────────────────────
+\begin{algorithm}[H]
+  \caption{$\paramshat \leftarrow \textsc{TrainR1Zero}(\mathcal{Q}, \params_0)$}
+  \Comment{Train DeepSeek-R1-Zero via pure RL on the base model.}
+  \KwIn{$\mathcal{Q}$, set of reasoning questions with ground-truth answers}
+  \KwIn{$\params_0$, pre-trained base model parameters (DeepSeek-V3-Base)}
+  \KwOut{$\paramshat$, trained policy parameters}
+  \textbf{Hyperparameters:} $N_{\mathrm{steps}} = 10{,}400$, $G = 16$ (group size), $B = 32$ (questions/step), \\
+  \quad $\eta = 3 \times 10^{-6}$ (learning rate), $\beta = 0.001$ (KL coefficient), \\
+  \quad $\varepsilon$ (clip ratio; not specified for R1-Zero), $\tau_{\mathrm{sample}} = 1.0$ (rollout temperature), \\
+  \quad $\ell_{\max} \in \{32768, 65536\}$ (max output length), $N_{\mathrm{ref}} = 400$ (ref.\ update interval) \;
+  \BlankLine
+  $\params \leftarrow \params_0$ \;
+  $\params_{\mathrm{ref}} \leftarrow \params_0$ \;
+  \BlankLine
+  \For{$s = 1, 2, \ldots, N_{\mathrm{steps}}$}{
+    Sample mini-batch $\{q_b\}_{b=1}^{B} \sim \mathcal{Q}$ \;
+    \If{$s > 8200$}{$\ell_{\max} \leftarrow 65536$} \Comment*[r]{extend max length at step 8.2k}
+    \BlankLine
+    \Comment{Rollout phase: sample $G$ outputs per question}
+    $\params_{\mathrm{old}} \leftarrow \params$ \;
+    \For{$b = 1, \ldots, B$}{
+      \For{$i = 1, \ldots, G$}{
+        $o_i^{(b)} \sim \pi_{\params_{\mathrm{old}}}(\cdot \mid \textsc{Template}(q_b))$ with temperature $\tau_{\mathrm{sample}}$, max length $\ell_{\max}$ \;
+      }
+    }
+    \BlankLine
+    \Comment{Reward computation}
+    \For{$b = 1, \ldots, B$}{
+      \For{$i = 1, \ldots, G$}{
+        $r_i^{(b)} \leftarrow \textsc{RuleReward}(q_b, o_i^{(b)}, a_b^* \mid \text{type}_b)$ \Comment*[r]{Algorithm 3, without $r_{\mathrm{lang}}$}
+      }
+      $\{A_i^{(b)}\}_{i=1}^{G} \leftarrow \textsc{GRPOAdvantage}(\{r_i^{(b)}\}_{i=1}^{G})$ \Comment*[r]{Algorithm 1}
+    }
+    \BlankLine
+    \Comment{Policy update (single inner epoch, 16 mini-batches)}
+    $\mathcal{J} \leftarrow \frac{1}{B} \sum_{b=1}^{B} \textsc{GRPOObjective}(q_b, \{o_i^{(b)}\}, \{A_i^{(b)}\} \mid \params, \params_{\mathrm{old}}, \params_{\mathrm{ref}})$ \;
+    $\params \leftarrow \params + \eta \cdot \nabla_{\params} \mathcal{J}$ \;
+    \BlankLine
+    \If{$s \bmod N_{\mathrm{ref}} = 0$}{
+      $\params_{\mathrm{ref}} \leftarrow \params$ \Comment*[r]{periodically refresh reference policy}
+    }
+  }
+  \Return $\paramshat = \params$
+\end{algorithm}
+
+\medskip
+
+The \textsc{Template} function wraps each question $q$ in the prompt from Table~1 of the paper: ``\textit{A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within \texttt{<think>}...\texttt{</think>} and \texttt{<answer>}...\texttt{</answer>} tags, respectively, i.e., \texttt{<think>} reasoning process here \texttt{</think>} \texttt{<answer>} answer here \texttt{</answer>}. User: \{prompt\}. Assistant:}'' This avoids content-specific biases on the reasoning process. Note that the clip ratio $\varepsilon$ is not explicitly stated for R1-Zero in the paper; it is specified as $\varepsilon = 10$ only for the R1 first-stage RL (Section~3.2.1).
+
+\subsection{DeepSeek-R1: Multi-Stage Pipeline}
+
+DeepSeek-R1 extends R1-Zero through a four-stage pipeline to address readability, language mixing, and general-purpose capabilities.
+
+% ── Algorithm 6: Full R1 Pipeline ────────────────────────────────────────
+\begin{algorithm}[H]
+  \caption{$\paramshat_{\mathrm{R1}} \leftarrow \textsc{TrainR1}(\mathcal{Q}_{\mathrm{reason}}, \mathcal{Q}_{\mathrm{general}}, \mathcal{D}_{\mathrm{cold}}, \mathcal{D}_{\mathrm{SFT}}, \params_0)$}
+  \Comment{Full DeepSeek-R1 multi-stage training pipeline.}
+  \KwIn{$\mathcal{Q}_{\mathrm{reason}}$, reasoning prompts (math, code, STEM, logic)}
+  \KwIn{$\mathcal{Q}_{\mathrm{general}}$, general prompts (helpfulness + safety)}
+  \KwIn{$\mathcal{D}_{\mathrm{cold}}$, cold-start long-CoT data ($\sim$thousands of examples)}
+  \KwIn{$\mathcal{D}_{\mathrm{SFT}}$, 800k SFT dataset (600k reasoning + 200k non-reasoning)}
+  \KwIn{$\params_0$, DeepSeek-V3-Base parameters}
+  \KwOut{$\paramshat_{\mathrm{R1}}$, final trained parameters}
+  \BlankLine
+  \Comment{\textbf{Stage 1: Cold-Start SFT}}
+  $\params_{\mathrm{Dev1}} \leftarrow \textsc{SFT}(\params_0, \mathcal{D}_{\mathrm{cold}})$ \Comment*[r]{2--3 epochs, $\eta_0 = 5{\times}10^{-5}$}
+  \BlankLine
+  \Comment{\textbf{Stage 2: Reasoning-Focused RL} (first RL stage)}
+  $\params_{\mathrm{Dev2}} \leftarrow \textsc{GRPO\text{-}Train}(\params_{\mathrm{Dev1}}, \mathcal{Q}_{\mathrm{reason}})$ \;
+  \quad with rewards: $r = \textsc{RuleReward}(q, o, a^*) + r_{\mathrm{lang}}$ \;
+  \quad and hyperparameters: $\varepsilon = 10$, $\tau = 1.0$, $\ell_{\max} = 32768$ \;
+  \BlankLine
+  \Comment{\textbf{Stage 3: Rejection Sampling + Mixed SFT}}
+  \Comment{Generate reasoning trajectories from $\params_{\mathrm{Dev2}}$ via rejection sampling}
+  \For{each $q \in \mathcal{Q}_{\mathrm{reason}}$}{
+    Sample $\{o_j\}_{j=1}^{M} \sim \pi_{\params_{\mathrm{Dev2}}}(\cdot \mid q)$ with $\tau = 1.0$ \;
+    Retain $o_j$ if correct answer $\land$ readable format $\land$ consistent language \;
+    Refine retained outputs via DeepSeek-V3 for formatting and readability \;
+  }
+  $\mathcal{D}_{\mathrm{SFT}} \leftarrow$ filtered reasoning data $\cup$ non-reasoning SFT data \;
+  $\params_{\mathrm{Dev3}} \leftarrow \textsc{SFT}(\params_0, \mathcal{D}_{\mathrm{SFT}})$ \Comment*[r]{train from base on 800k mixed data}
+  \BlankLine
+  \Comment{\textbf{Stage 4: Comprehensive RL} (second RL stage)}
+  $\paramshat_{\mathrm{R1}} \leftarrow \textsc{GRPO\text{-}Train}(\params_{\mathrm{Dev3}}, \mathcal{Q}_{\mathrm{reason}} \cup \mathcal{Q}_{\mathrm{general}})$ \;
+  \quad with rewards: $r = r_{\mathrm{reasoning}} + r_{\mathrm{general}} + r_{\mathrm{lang}}$ \;
+  \quad where $r_{\mathrm{reasoning}} = \textsc{RuleReward}(\cdot)$ (Algorithm~3) \;
+  \quad\quad\quad\; $r_{\mathrm{general}} = \textsc{ModelReward}(\cdot)$ (Algorithm~4) \;
+  \quad and hyperparameters: $\tau = 0.7$, 1700 total steps, general data in last 400 steps \;
+  \BlankLine
+  \Return $\paramshat_{\mathrm{R1}}$
+\end{algorithm}
+
+\medskip
+
+The pipeline produces intermediate checkpoints Dev1 through Dev3. Dev1 has improved readability but slightly degraded reasoning (due to the small cold-start dataset). Dev2 recovers and improves reasoning via RL. Dev3 incorporates broad capabilities through mixed SFT. The final R1 model refines all capabilities through comprehensive RL, with general instruction-following data introduced only in the final 400 steps to limit reward hacking.
+
+% ── Section 6: Inference ────────────────────────────────────────────────────
+\section{Inference}
+
+% ── Algorithm 7: Structured Inference ────────────────────────────────────
+\begin{algorithm}[H]
+  \caption{$(\vect{c}, \vect{a}) \leftarrow \textsc{R1Inference}(\vect{x} \mid \paramshat)$}
+  \Comment{Generate a structured response with chain-of-thought reasoning followed by an answer.}
+  \KwIn{$\vect{x} \in V^*$, user prompt}
+  \KwOut{$\vect{c} \in V^*$, chain-of-thought reasoning (within $\langle$think$\rangle$ tags)}
+  \KwOut{$\vect{a} \in V^*$, final answer (within $\langle$answer$\rangle$ tags)}
+  \textbf{Trained parameters:} $\paramshat$ \;
+  \textbf{Hyperparameters:} $\tau \in (0, \infty)$ temperature, $p_{\mathrm{top}} \in (0, 1]$ nucleus threshold, \\
+  \quad $\ell_{\max} = 32768$ max generation tokens \;
+  \BlankLine
+  $\vect{z} \leftarrow \textsc{Template}(\vect{x})$ \Comment*[r]{wrap in conversation template}
+  $\vect{y} \leftarrow \texttt{<think>}$ \Comment*[r]{begin chain-of-thought}
+  \BlankLine
+  \For{$t = 1, 2, \ldots, \ell_{\max}$}{
+    $\vect{p} \leftarrow \pi_{\paramshat}(\cdot \mid [\vect{z}, \vect{y}])$ \Comment*[r]{next-token distribution}
+    Sample $y_t$ from $\vect{p}^{1/\tau}$ with nucleus sampling (top-$p_{\mathrm{top}}$) \;
+    $\vect{y} \leftarrow [\vect{y}, y_t]$ \;
+    \If{$y_t = \texttt{EOS}$ \textbf{or} $\vect{y}$ ends with $\texttt{</answer>}$}{
+      \textbf{break} \;
+    }
+  }
+  \BlankLine
+  $\vect{c} \leftarrow$ tokens between $\texttt{<think>}$ and $\texttt{</think>}$ in $\vect{y}$ \;
+  $\vect{a} \leftarrow$ tokens between $\texttt{<answer>}$ and $\texttt{</answer>}$ in $\vect{y}$ \;
+  \Return $(\vect{c}, \vect{a})$
+\end{algorithm}
+
+\medskip
+
+DeepSeek-R1 dynamically allocates test-time compute based on problem difficulty: simple questions may use fewer than 100 thinking tokens, while competition-level mathematics problems can consume over 18,000 thinking tokens. The model is sensitive to prompting---zero-shot prompting is recommended, as few-shot prompting consistently degrades performance.
+
+% ── Appendix: Notation Table ────────────────────────────────────────────────
+\appendix
+\section{List of Notation}
+
+\begin{longtable}{lll}
+\toprule
+\textbf{Symbol} & \textbf{Type} & \textbf{Explanation} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Symbol} & \textbf{Type} & \textbf{Explanation} \\
+\midrule
+\endhead
+\multicolumn{3}{c}{\textit{Index sets and sizes}} \\
+\midrule
+$\intset{N}$ & $:= \{1,\ldots,N\}$ & set of integers $1$ to $N$ \\
+$V \cong \intset{N_V}$ & & vocabulary \\
+$N_V \in \N$ & & vocabulary size \\
+$G \in \N$ & & group size (outputs per question) \\
+$B \in \N$ & & questions per training step (batch) \\
+\midrule
+\multicolumn{3}{c}{\textit{Sequences}} \\
+\midrule
+$q \in V^*$ & & input question / prompt \\
+$o, o_i \in V^*$ & & generated output sequence \\
+$\vect{x} \equiv x[1:\ell]$ & $\in V^\ell$ & token sequence \\
+$a^* \in V^*$ & & ground-truth answer \\
+$\hat{a} \in V^*$ & & extracted predicted answer \\
+$\vect{c} \in V^*$ & & chain-of-thought reasoning tokens \\
+$\vect{a} \in V^*$ & & final answer tokens \\
+\midrule
+\multicolumn{3}{c}{\textit{Datasets and collections}} \\
+\midrule
+$\mathcal{Q}$ & & set of questions with ground-truth answers \\
+$\mathcal{Q}_{\mathrm{reason}}$ & & reasoning prompts (math, code, STEM, logic) \\
+$\mathcal{Q}_{\mathrm{general}}$ & & general prompts (helpfulness + safety) \\
+$\mathcal{D}_{\mathrm{cold}}$ & & cold-start long-CoT SFT data \\
+$\mathcal{D}_{\mathrm{SFT}}$ & & mixed SFT dataset ($\sim$800k samples) \\
+$\mathcal{T}_q$ & & set of test cases for code problem $q$ \\
+$M \in \N$ & & number of samples for rejection sampling \\
+\midrule
+\multicolumn{3}{c}{\textit{Policy and probability}} \\
+\midrule
+$\pi_{\params}(o \mid q)$ & $\in [0,1]$ & probability of output $o$ given $q$ under $\params$ \\
+$\params \in \R^d$ & & learnable parameters of the policy model \\
+$\paramshat \in \R^d$ & & trained (final) parameters \\
+$\params_0 \in \R^d$ & & pre-trained base model parameters \\
+$\params_{\mathrm{old}} \in \R^d$ & & old (sampling) policy parameters \\
+$\params_{\mathrm{ref}} \in \R^d$ & & reference policy parameters \\
+$\rho_i \in (0, \infty)$ & & importance sampling ratio $\pi_{\params}(o_i|q)/\pi_{\params_{\mathrm{old}}}(o_i|q)$ \\
+\midrule
+\multicolumn{3}{c}{\textit{Rewards and advantages}} \\
+\midrule
+$r_i \in \R$ & & scalar reward for $i$-th output \\
+$r_{\mathrm{acc}} \in \{0, 1\}$ & & accuracy reward (correct answer) \\
+$r_{\mathrm{fmt}} \in \{0, 1\}$ & & format reward (valid tags) \\
+$r_{\mathrm{lang}} \in [0, 1]$ & & language consistency reward \\
+$r_{\mathrm{pref}} \in \R$ & & preference reward from reward model \\
+$A_i \in \R$ & & group-relative advantage for $i$-th output \\
+\midrule
+\multicolumn{3}{c}{\textit{Hyperparameters}} \\
+\midrule
+$\eta \in (0, \infty)$ & & learning rate \\
+$\varepsilon \in (0, \infty)$ & & GRPO clipping ratio \\
+$\beta \in [0, \infty)$ & & KL divergence penalty coefficient \\
+$\tau_{\mathrm{sample}} \in (0, \infty)$ & & rollout sampling temperature \\
+$\tau \in (0, \infty)$ & & inference temperature \\
+$\ell_{\max} \in \N$ & & maximum output token length \\
+$N_{\mathrm{steps}} \in \N$ & & total training steps \\
+$N_{\mathrm{ref}} \in \N$ & & reference model update interval (steps) \\
+$p_{\mathrm{top}} \in (0, 1]$ & & nucleus sampling threshold \\
+\midrule
+\multicolumn{3}{c}{\textit{Operators and functions}} \\
+\midrule
+$\clip(x, a, b)$ & $\in [a, b]$ & clamp $x$ to $[a, b]$ \\
+$\hat{D}_i$ & $\in \R$ & unbiased KL divergence estimator for output $i$ \\
+$\mathbb{I}[\cdot]$ & $\in \{0, 1\}$ & indicator function \\
+$\textsc{Lang}(w)$ & & detected language of word $w$ \\
+$\textsc{RM}_{\mathrm{help}}$ & & helpful reward model \\
+$\textsc{RM}_{\mathrm{safe}}$ & & safety reward model \\
+\bottomrule
+\end{longtable}
+
+% ── References ──────────────────────────────────────────────────────────────
+\section*{References}
+
+\begin{itemize}
+\item DeepSeek-AI. \textit{DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning.} arXiv:2501.12948v2, January 2025.
+\item DeepSeek-AI. \textit{DeepSeek-V3 Technical Report.} arXiv:2412.19437, December 2024.
+\item Shao, Z. et al. \textit{DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models.} arXiv:2402.03300, 2024. (Introduces GRPO.)
+\item Schulman, J. et al. \textit{Proximal Policy Optimization Algorithms.} arXiv:1707.06347, 2017.
+\item Schulman, J. \textit{Approximating KL Divergence.} Blog post, 2020.
+\item Phuong, M. \& Hutter, M. \textit{Formal Algorithms for Transformers.} arXiv:2207.09238, 2022.
+\end{itemize}
+
+\end{document}
