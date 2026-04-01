@@ -349,35 +349,27 @@ R1's `<think>/<answer>` structure is enforced by neither the architecture nor a 
 **If structured outputs (tool calls, JSON, chain-of-thought tags) are becoming central to how LLMs are used, is this a gap in the formalism that needs a new primitive, or is "just tokens in $V^{\ast}$" the right abstraction?**
 
 ---
+## 6 · The paper's contribution
 
-## 6 · Summary: What's Actually New
+DeepSeek-R1's architectural changes are surprisingly *minimal*. The transformer architecture left completely intact. 
 
-Viewed through the lens of Phuong & Hutter, DeepSeek-R1's contribution is surprisingly *narrow* in terms of what it changes, and surprisingly *deep* in terms of what it discovers.
+What changed was everything *around* it: the training objective (`TrainR1Zero`), the reward signal (sparse outcome rewards), and the advantage estimation (GRPO). By holding the architecture fixed and completely overhauling the training signal, DeepSeek achieved four revolutionary results:
 
-### What Didn't Change
-- `DTransformer` (the forward pass) — identical
-- `Attention`, `MHAttention`, `layer_norm` — identical
-- The embedding, unembedding, positional encoding — identical
-- The architecture is DeepSeek-V3, a 671B MoE model, but the R1 paper's contribution is orthogonal to the architecture
+### 1. The Emergence of the "Aha Moment"
+Because the model was given a sparse reward (only graded on the final answer) instead of dense per-token imitation, it had to figure out problem-solving strategies entirely on its own. The researchers observed the model spontaneously developing self-reflection. Without ever being explicitly taught to do so, the model began writing things like *"Wait, this approach is flawed, let me backtrack,"* organically discovering that self-correction maximizes its final reward.
 
-### What Changed
+### 2. Breaking the "Human Ceiling" (Zero SFT)
+Before R1, the industry consensus was that advanced reasoning required Supervised Fine-Tuning (SFT) — paying humans to write out thousands of step-by-step logic traces for the model to imitate. DeepSeek-R1-Zero proved you can skip this entirely. By abandoning human-written templates, the model is no longer capped by human intelligence or forced into human-like problem-solving patterns. It explores and discovers superior mathematical pathways on its own.
 
-| Phuong & Hutter | DeepSeek-R1 | Why |
-|---|---|---|
-| `DTraining`: minimize cross-entropy on next-token prediction | `TrainR1Zero`/`TrainR1`: maximize GRPO objective on outcome rewards | Shift from imitation to incentivization |
-| Loss is **dense** (per-token) | Reward is **sparse** (per-sequence) | Forces the model to discover its own intermediate steps |
-| Single training phase | Four-stage pipeline (SFT → RL → SFT → RL) | Each stage addresses failure modes of the previous one |
-| `DInference`: flat $y \in V^{\ast}$ | `R1Inference`: structured $(c, a) \in V^{\ast} \times V^{\ast}$ | Separates reasoning from final answer |
-| Advantage via value network (PPO) | Advantage via group statistics (GRPO) | Eliminates the need for a second 671B model |
+### 3. Radical Computational Feasibility 
+In standard RLHF pipelines, calculating the advantage required a Value Model of the exact same size as the policy model. For a 671-billion parameter model, running a second 671-billion parameter network just to grade it is financially and computationally paralyzing. By replacing PPO with GRPO — grading the group's outputs relative to each other using simple statistics ($\mu$ and $\sigma$) — DeepSeek eliminated the massive Value Model entirely. They proved that frontier-level RL can be done with radical efficiency.
+
+### 4. Democratizing AI via Distillation
+Once the massive 671B model learned these advanced reasoning patterns through pure RL, DeepSeek proved these behaviors could be packaged and taught to much smaller models. By generating high-quality reasoning traces and using them as standard `DTraining` data for smaller architectures (like 7B or 14B parameter models), they "distilled" the intelligence down. This allows state-of-the-art reasoning to run on everyday consumer hardware.
 
 ### The Big Takeaway
 
-The transformer architecture — the thing we spent the semester formalizing — is a *fixed point* of this paper. What moves is everything *around* it: the training objective, the reward signal, the data pipeline, and the inference structure.
-
-R1's claim is that if you hold the architecture fixed and change only the training signal from "predict the next token" to "get the right answer," a sufficiently large transformer will *spontaneously develop* chain-of-thought reasoning, self-verification, error correction, and dynamic compute allocation.
-
-Whether you find this claim exciting or alarming probably depends on your priors about what "reasoning" means — and that's a conversation worth having.
-
+The `DTransformer` we studied this semester is a far more capable reasoning engine than we originally thought. We don't necessarily need a new underlying architecture to achieve next-level intelligence; we just needed a better way to incentivize the architecture we already have.
 ---
 
 ## Appendix: Key Notation Crosswalk
