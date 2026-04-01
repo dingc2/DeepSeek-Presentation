@@ -2,10 +2,6 @@
 
 ### DeepSeek-R1 Through the Lens of *Formal Algorithms for Transformers*
 
-A first-pass reading of [DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning](https://arxiv.org/abs/2501.12948) (DeepSeek-AI, January 2025).
-
-Presented for a class that has internalized Phuong & Hutter (2022).
-
 ---
 
 ## Roadmap
