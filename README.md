@@ -69,44 +69,44 @@ This is the central change. Let's compare Phuong & Hutter's `DTraining` with Dee
 
 **Phuong & Hutter — Algorithm 14: `DTraining`**
 
-$$
-\begin{array}{l}
-\textbf{DTraining}(x_{1:N_{\text{data}}}, \theta) \to \hat{\theta} \\
-\\
-\quad \textbf{for } \text{epoch} = 1, 2, \ldots, N_{\text{epochs}} \textbf{:} \\
-\quad\quad \textbf{for } n = 1, 2, \ldots, N_{\text{data}} \textbf{:} \\
-\quad\quad\quad \ell \leftarrow \text{length}(x_n) \\
-\quad\quad\quad P(\theta) \leftarrow \text{DTransformer}(x_n \mid \theta) \\
-\quad\quad\quad \text{loss}(\theta) = -\sum_{t=1}^{\ell-1} \log P(\theta)[x_n[t+1], t] \quad \triangleright \text{ cross-entropy} \\
-\quad\quad\quad \theta \leftarrow \theta - \eta \cdot \nabla \text{loss}(\theta) \quad \triangleright \text{ gradient descent} \\
-\\
-\quad \textbf{return } \hat{\theta} = \theta
-\end{array}
-$$
+```
+DTraining(x_{1:N_data}, θ) → θ̂
+    for epoch = 1, 2, ..., N_epochs:
+        for n = 1, 2, ..., N_data:
+            ℓ ← length(x_n)
+            P(θ) ← DTransformer(x_n | θ)
+            loss(θ) = −Σ log P(θ)[x_n[t+1], t]              ← cross-entropy
+            θ ← θ − η · ∇loss(θ)                             ← gradient descent
+    return θ̂ = θ
+```
+
+The core formula — minimize cross-entropy over every token:
+
+$$\text{loss}(\theta) = -\sum_{t=1}^{\ell-1} \log P(\theta)[x_n[t+1], t]$$
 
 **DeepSeek-R1-Zero — Algorithm 5: `TrainR1Zero`**
 
-$$
-\begin{array}{l}
-\textbf{TrainR1Zero}(\mathcal{Q}, \theta_0) \to \hat{\theta} \\
-\\
-\theta \leftarrow \theta_0; \quad \theta_{\text{ref}} \leftarrow \theta_0 \\
-\textbf{for } s = 1, 2, \ldots, N_{\text{steps}} \textbf{:} \\
-\quad \text{sample mini-batch } \{q_b\} \text{ from } \mathcal{Q} \\
-\quad \theta_{\text{old}} \leftarrow \theta \\
-\quad \textbf{for each } q_b \textbf{:} \\
-\quad\quad \textbf{for } i = 1, \ldots, G \textbf{:} \quad \triangleright \text{ sample } G \text{ outputs per question} \\
-\quad\quad\quad o_i \sim \pi_{\theta_{\text{old}}}(\cdot \mid \text{Template}(q_b)) \\
-\quad\quad \textbf{for } i = 1, \ldots, G \textbf{:} \\
-\quad\quad\quad r_i \leftarrow \text{RuleReward}(q_b, o_i, a_b^{\ast}) \quad \triangleright \text{ correct answer?} \\
-\quad\quad \{A_i\} \leftarrow \text{GRPOAdvantage}(\{r_i\}) \quad \triangleright \text{ normalize within group} \\
-\quad \mathcal{J} \leftarrow \frac{1}{B} \sum_b \text{GRPOObjective}(q_b, \{o_i\}, \{A_i\} \mid \theta, \theta_{\text{old}}, \theta_{\text{ref}}) \\
-\quad \theta \leftarrow \theta + \eta \cdot \nabla_\theta \mathcal{J} \quad \triangleright \text{ gradient ascent (maximize)} \\
-\quad \textbf{if } s \bmod N_{\text{ref}} = 0 \textbf{: } \theta_{\text{ref}} \leftarrow \theta \\
-\\
-\textbf{return } \hat{\theta} = \theta
-\end{array}
-$$
+```
+TrainR1Zero(Q, θ_0) → θ̂
+    θ ← θ_0;  θ_ref ← θ_0
+    for s = 1, 2, ..., N_steps:
+        sample mini-batch {q_b} from Q
+        θ_old ← θ
+        for each q_b:
+            for i = 1, ..., G:                                ← sample G outputs per question
+                o_i ~ π_{θ_old}(· | Template(q_b))
+            for i = 1, ..., G:
+                r_i ← RuleReward(q_b, o_i, a_b*)             ← did it get the right answer?
+            {A_i} ← GRPOAdvantage({r_i})                     ← normalize within group
+        J ← (1/B) Σ_b GRPOObjective(...)                     ← clipped surrogate + KL penalty
+        θ ← θ + η · ∇_θ J                                    ← gradient ASCENT (maximize)
+        if s mod N_ref = 0:  θ_ref ← θ
+    return θ̂ = θ
+```
+
+The core formula — maximize the GRPO objective:
+
+$$\mathcal{J} = \frac{1}{B} \sum_b \text{GRPOObjective}(q_b, \{o_i\}, \{A_i\} \mid \theta, \theta_{\text{old}}, \theta_{\text{ref}})$$
 
 Here is the diff:
 
@@ -166,20 +166,18 @@ $$A_t^{\text{PPO}} = \sum_{k=0}^{T-t} (\gamma\lambda)^k \big(r_{t+k} + \gamma V_
 
 GRPO replaces all of this with a z-score:
 
-$$
-\begin{array}{l}
-\textbf{GRPOAdvantage}(\{r_i\}_{i=1}^{G}) \to \{A_i\}_{i=1}^{G} \\
-\\
-\mu \leftarrow \frac{1}{G} \sum_{i=1}^{G} r_i \quad \triangleright \text{ group mean} \\
-\\
-\sigma \leftarrow \sqrt{\frac{1}{G} \sum_{i=1}^{G} (r_i - \mu)^2} \quad \triangleright \text{ group std} \\
-\\
-\textbf{for } i = 1, 2, \ldots, G \textbf{:} \\
-\quad A_i \leftarrow \frac{r_i - \mu}{\sigma} \\
-\\
-\textbf{return } \{A_i\}_{i=1}^{G}
-\end{array}
-$$
+```
+GRPOAdvantage({r_i}) → {A_i}
+    μ ← (1/G) Σ r_i                           ← group mean
+    σ ← sqrt((1/G) Σ (r_i − μ)²)              ← group std
+    for i = 1, ..., G:
+        A_i ← (r_i − μ) / σ
+    return {A_i}
+```
+
+The key formulas:
+
+$$\mu = \frac{1}{G} \sum_{i=1}^{G} r_i \qquad \sigma = \sqrt{\frac{1}{G} \sum_{i=1}^{G} (r_i - \mu)^2} \qquad A_i = \frac{r_i - \mu}{\sigma}$$
 
 And the GRPO objective each output contributes to:
 
