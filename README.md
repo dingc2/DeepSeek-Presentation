@@ -134,9 +134,7 @@ Here is the diff:
   return θ̂ = θ
 ```
 
-#### What to notice in this diff
-
-**Five things changed. Nothing else.**
+#### Five things changed
 
 1. **The data** went from token sequences to question-answer pairs. The model no longer sees the "right" token sequence — it has to generate one.
 
