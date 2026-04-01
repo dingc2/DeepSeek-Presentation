@@ -25,17 +25,17 @@ We've spent the semester with three algorithms that define how a decoder-only tr
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Algorithm 13: DTransformer(x | θ)  →  P               │
+│  Algorithm 13: DTransformer(x | θ)  →  P                │
 │    The forward pass. Tokens in, probability matrix out. │
 │    Unchanged by R1. Not one line is different.          │
 ├─────────────────────────────────────────────────────────┤
-│  Algorithm 14: DTraining(x_{1:N}, θ)  →  θ̂             │
+│  Algorithm 14: DTraining(x_{1:N}, θ)  →  θ̂              │
 │    Minimize cross-entropy on next-token prediction.     │
-│    ← THIS IS WHAT R1 REPLACES.                         │
+│    ← THIS IS WHAT R1 REPLACES.                          │
 ├─────────────────────────────────────────────────────────┤
-│  Algorithm 15: DInference(x, θ̂)  →  y                  │
+│  Algorithm 15: DInference(x, θ̂)  →  y                   │
 │    Prompt → sample tokens autoregressively.             │
-│    ← THIS IS WHAT R1 EXTENDS.                          │
+│    ← THIS IS WHAT R1 EXTENDS.                           │
 └─────────────────────────────────────────────────────────┘
 ```
 
