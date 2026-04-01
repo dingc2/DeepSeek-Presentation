@@ -49,7 +49,7 @@ Phuong & Hutter's `DTraining` optimizes a single objective:
 
 > Maximize the log-likelihood of the next token given all preceding tokens.
 
-$$\text{loss}(\theta) = -\sum_{t=1}^{\ell-1} \log P_\theta\!\left(x[t{+}1] \mid x[1{:}t]\right)$$
+$$\text{loss}(\theta) = -\sum_{t=1}^{\ell-1} \log P_\theta(x[t+1] \mid x[1:t])$$
 
 This is *imitation*. The model learns to mimic the statistical patterns in its training corpus. If the corpus contains reasoning, the model learns to produce text that *looks like* reasoning.
 
@@ -70,38 +70,42 @@ This is the central change. Let's compare Phuong & Hutter's `DTraining` with Dee
 **Phuong & Hutter — Algorithm 14: `DTraining`**
 
 $$
-\begin{aligned}
-& \textbf{DTraining}(x_{1:N_{\text{data}}},\; \theta) \to \hat{\theta} \\[6pt]
-& \textbf{for } \text{epoch} = 1, 2, \ldots, N_{\text{epochs}}\textbf{:} \\
-& \quad \textbf{for } n = 1, 2, \ldots, N_{\text{data}}\textbf{:} \\
-& \qquad \ell \leftarrow \text{length}(x_n) \\
-& \qquad P(\theta) \leftarrow \text{DTransformer}(x_n \mid \theta) \\
-& \qquad \text{loss}(\theta) = -\sum_{t=1}^{\ell-1} \log P(\theta)\big[x_n[t{+}1],\; t\big] \quad \triangleright \text{ cross-entropy} \\
-& \qquad \theta \leftarrow \theta - \eta \cdot \nabla\,\text{loss}(\theta) \quad \triangleright \text{ gradient descent} \\[6pt]
-& \textbf{return } \hat{\theta} = \theta
-\end{aligned}
+\begin{array}{l}
+\textbf{DTraining}(x_{1:N_{\text{data}}}, \theta) \to \hat{\theta} \\
+\\
+\quad \textbf{for } \text{epoch} = 1, 2, \ldots, N_{\text{epochs}} \textbf{:} \\
+\quad\quad \textbf{for } n = 1, 2, \ldots, N_{\text{data}} \textbf{:} \\
+\quad\quad\quad \ell \leftarrow \text{length}(x_n) \\
+\quad\quad\quad P(\theta) \leftarrow \text{DTransformer}(x_n \mid \theta) \\
+\quad\quad\quad \text{loss}(\theta) = -\sum_{t=1}^{\ell-1} \log P(\theta)[x_n[t+1], t] \quad \triangleright \text{ cross-entropy} \\
+\quad\quad\quad \theta \leftarrow \theta - \eta \cdot \nabla \text{loss}(\theta) \quad \triangleright \text{ gradient descent} \\
+\\
+\quad \textbf{return } \hat{\theta} = \theta
+\end{array}
 $$
 
 **DeepSeek-R1-Zero — Algorithm 5: `TrainR1Zero`**
 
 $$
-\begin{aligned}
-& \textbf{TrainR1Zero}(\mathcal{Q},\; \theta_0) \to \hat{\theta} \\[6pt]
-& \theta \leftarrow \theta_0 \;;\quad \theta_{\text{ref}} \leftarrow \theta_0 \\
-& \textbf{for } s = 1, 2, \ldots, N_{\text{steps}}\textbf{:} \\
-& \quad \text{sample mini-batch } \{q_b\} \text{ from } \mathcal{Q} \\
-& \quad \theta_{\text{old}} \leftarrow \theta \\
-& \quad \textbf{for each } q_b\textbf{:} \\
-& \qquad \textbf{for } i = 1, \ldots, G\textbf{:} \quad \triangleright \text{ sample } G \text{ outputs per question} \\
-& \qquad\quad o_i \sim \pi_{\theta_{\text{old}}}(\;\cdot \mid \text{Template}(q_b)\;) \\
-& \qquad \textbf{for } i = 1, \ldots, G\textbf{:} \\
-& \qquad\quad r_i \leftarrow \text{RuleReward}(q_b,\; o_i,\; a_b^{\ast}) \quad \triangleright \text{ did it get the right answer?} \\
-& \qquad \{A_i\} \leftarrow \text{GRPOAdvantage}(\{r_i\}) \quad \triangleright \text{ normalize within group} \\
-& \quad \mathcal{J} \leftarrow \tfrac{1}{B} \textstyle\sum_b \text{GRPOObjective}(q_b,\; \{o_i\},\; \{A_i\} \mid \theta,\; \theta_{\text{old}},\; \theta_{\text{ref}}) \\
-& \quad \theta \leftarrow \theta + \eta \cdot \nabla_\theta \mathcal{J} \quad \triangleright \text{ gradient ascent (maximize)} \\
-& \quad \textbf{if } s \bmod N_{\text{ref}} = 0\textbf{: } \theta_{\text{ref}} \leftarrow \theta \\[6pt]
-& \textbf{return } \hat{\theta} = \theta
-\end{aligned}
+\begin{array}{l}
+\textbf{TrainR1Zero}(\mathcal{Q}, \theta_0) \to \hat{\theta} \\
+\\
+\theta \leftarrow \theta_0; \quad \theta_{\text{ref}} \leftarrow \theta_0 \\
+\textbf{for } s = 1, 2, \ldots, N_{\text{steps}} \textbf{:} \\
+\quad \text{sample mini-batch } \{q_b\} \text{ from } \mathcal{Q} \\
+\quad \theta_{\text{old}} \leftarrow \theta \\
+\quad \textbf{for each } q_b \textbf{:} \\
+\quad\quad \textbf{for } i = 1, \ldots, G \textbf{:} \quad \triangleright \text{ sample } G \text{ outputs per question} \\
+\quad\quad\quad o_i \sim \pi_{\theta_{\text{old}}}(\cdot \mid \text{Template}(q_b)) \\
+\quad\quad \textbf{for } i = 1, \ldots, G \textbf{:} \\
+\quad\quad\quad r_i \leftarrow \text{RuleReward}(q_b, o_i, a_b^{\ast}) \quad \triangleright \text{ correct answer?} \\
+\quad\quad \{A_i\} \leftarrow \text{GRPOAdvantage}(\{r_i\}) \quad \triangleright \text{ normalize within group} \\
+\quad \mathcal{J} \leftarrow \frac{1}{B} \sum_b \text{GRPOObjective}(q_b, \{o_i\}, \{A_i\} \mid \theta, \theta_{\text{old}}, \theta_{\text{ref}}) \\
+\quad \theta \leftarrow \theta + \eta \cdot \nabla_\theta \mathcal{J} \quad \triangleright \text{ gradient ascent (maximize)} \\
+\quad \textbf{if } s \bmod N_{\text{ref}} = 0 \textbf{: } \theta_{\text{ref}} \leftarrow \theta \\
+\\
+\textbf{return } \hat{\theta} = \theta
+\end{array}
 $$
 
 Here is the diff:
@@ -163,21 +167,25 @@ $$A_t^{\text{PPO}} = \sum_{k=0}^{T-t} (\gamma\lambda)^k \big(r_{t+k} + \gamma V_
 GRPO replaces all of this with a z-score:
 
 $$
-\begin{aligned}
-& \textbf{GRPOAdvantage}(\{r_i\}_{i=1}^{G}) \to \{A_i\}_{i=1}^{G} \\[6pt]
-& \mu \leftarrow \frac{1}{G} \sum_{i=1}^{G} r_i \quad \triangleright \text{ group mean} \\[4pt]
-& \sigma \leftarrow \sqrt{\frac{1}{G} \sum_{i=1}^{G} (r_i - \mu)^2} \quad \triangleright \text{ group std} \\[4pt]
-& \textbf{for } i = 1, 2, \ldots, G\textbf{:} \\
-& \quad A_i \leftarrow \frac{r_i - \mu}{\sigma} \\[6pt]
-& \textbf{return } \{A_i\}_{i=1}^{G}
-\end{aligned}
+\begin{array}{l}
+\textbf{GRPOAdvantage}(\{r_i\}_{i=1}^{G}) \to \{A_i\}_{i=1}^{G} \\
+\\
+\mu \leftarrow \frac{1}{G} \sum_{i=1}^{G} r_i \quad \triangleright \text{ group mean} \\
+\\
+\sigma \leftarrow \sqrt{\frac{1}{G} \sum_{i=1}^{G} (r_i - \mu)^2} \quad \triangleright \text{ group std} \\
+\\
+\textbf{for } i = 1, 2, \ldots, G \textbf{:} \\
+\quad A_i \leftarrow \frac{r_i - \mu}{\sigma} \\
+\\
+\textbf{return } \{A_i\}_{i=1}^{G}
+\end{array}
 $$
 
 And the GRPO objective each output contributes to:
 
-$$\mathcal{J}_i^{\text{GRPO}} = \min\!\Big(\rho_i \, A_i,\; \text{clip}(\rho_i,\; 1{-}\varepsilon,\; 1{+}\varepsilon)\, A_i\Big) - \beta \, \hat{D}_{\text{KL}}$$
+$$\mathcal{J}_i^{\text{GRPO}} = \min\Big(\rho_i A_i, \text{ clip}(\rho_i, 1-\varepsilon, 1+\varepsilon) \cdot A_i\Big) - \beta \hat{D}_{\text{KL}}$$
 
-where $\rho_i = \pi_\theta(o_i \mid q) \;/\; \pi_{\theta_{\text{old}}}(o_i \mid q)$ is the importance sampling ratio.
+where $\rho_i = \pi_\theta(o_i \mid q) / \pi_{\theta_{\text{old}}}(o_i \mid q)$ is the importance sampling ratio.
 
 ```diff
   ADVANTAGE ESTIMATION
